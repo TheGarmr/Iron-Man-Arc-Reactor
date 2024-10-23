@@ -15,29 +15,36 @@
 //======================================================================================================================================================================
 
 //========================CONFIGURATIONS================================================================================================================================
-const char *AP_SSID = "";                  // WiFi network that will appear at first launch or in case of saved network not found
-const char *AP_PASSWORD = "";           // Password from the WiFi network
-const char *HOSTNAME = "IRON_MAN_ARC";            // Hostname of the device that will be shown
-const char *NTP_POOL_ADDRESS = "ua.pool.ntp.org"; // choose at at https://www.ntppool.org/
-const long GMT_3_OFFSET_IN_SECONDS = 3600 * 3;    // Offset in seconds for GMT + 3
-const int DISPLAY_BACKLIGHT_LEVEL = 2;            // Adjust it 0 to 7
-const int LED_RING_BRIGHTNESS = 200;              // Adjust it 0 to 255
-const int LED_RING_BRIGHTNESS_FLASH = 250;        // Adjust it 0 to 255
-const int PIXELS_COUNT_ON_RGB_LED = 35;           // How many NeoPixels are attached to the Wemos D1 Mini
-const int RED_LED_COLOR_RGB_NUMBER = 00;
-const int GREEN_LED_COLOR_RGB_NUMBER = 00;
-const int BLUE_LED_COLOR_RGB_NUMBER = 255;
+const char *VERSION = "1.1";
+const char *AP_SSID = "IRON_MAN_ARC";                       // WiFi network to connect to
+const char *AP_PASSWORD = "";                               // WiFi password
+const char *HOSTNAME = "IRON_MAN_ARC";                      // Device hostname
+const char *NTP_POOL_ADDRESS = "ua.pool.ntp.org";           // NTP server address
+const unsigned long GMT_3_OFFSET_IN_SECONDS = 3600 * 3;     // GMT + 3 offset in seconds
+const unsigned long NTP_CLIENT_UPDATE_TIME_IN_MS = 3600000; // One hour
+const unsigned int WIFI_CONNECTION_TIMEOUT_IN_MS = 10000;   // 10 seconds to connect to wifi
+const unsigned int DISPLAY_BACKLIGHT_LEVEL = 2;             // Display brightness level (0-7)
+const unsigned int LED_RING_BRIGHTNESS = 150;               // LED ring brightness (0-255)
+const unsigned int LED_RING_NIGHT_BRIGHTNESS = 5;           // LED ring brightness at night (0-255)
+const unsigned int PIXELS_COUNT_ON_RGB_LED = 35;            // Number of NeoPixels
+const unsigned int RED_LED_COLOR_RGB_NUMBER = 0;
+const unsigned int GREEN_LED_COLOR_RGB_NUMBER = 0;
+const unsigned int BLUE_LED_COLOR_RGB_NUMBER = 255;
+const unsigned int NIGHT_MODE_HOUR_START = 7;
+const unsigned int NIGHT_MODE_HOUR_END = 23;
 //======================================================================================================================================================================
 
-bool wifi_is_connected;
+bool wifi_is_connected = false;
 bool show_colon = true;
+bool ntp_client_updated_on_startup = false;
+bool night_mode_is_enabled = false;
 unsigned long colon_previous_millis = 0;
 
 Adafruit_NeoPixel led_ring(PIXELS_COUNT_ON_RGB_LED, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 TM1637Display digits_display(DISPLAY_CLK, DISPLAY_DIO);
 WiFiUDP wifi_udp_client;
-NTPClient ntp_client(wifi_udp_client, NTP_POOL_ADDRESS, GMT_3_OFFSET_IN_SECONDS);
-AsyncWebServer server(80);
+NTPClient ntp_client(wifi_udp_client, NTP_POOL_ADDRESS, GMT_3_OFFSET_IN_SECONDS, NTP_CLIENT_UPDATE_TIME_IN_MS);
+AsyncWebServer async_web_server(80);
 
 void setupWiFi()
 {
@@ -45,65 +52,107 @@ void setupWiFi()
   WiFi.begin(AP_SSID, AP_PASSWORD);
   WiFi.hostname(HOSTNAME);
   Serial.println("Connecting to wifi...");
-  while (WiFi.status() != WL_CONNECTED)
+  unsigned long startAttemptTime = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < WIFI_CONNECTION_TIMEOUT_IN_MS)
   {
-    delay(500);
-    Serial.print(".");
+    showLoadingOnDigitsDisplay();
   }
-  Serial.println("");
-  if (MDNS.begin(HOSTNAME))
+
+  wifi_is_connected = WiFi.status() == WL_CONNECTED;
+  if (wifi_is_connected)
   {
-    Serial.println("MDNS responder started");
+    Serial.println("Connected to WiFi...");
+    MDNS.begin(HOSTNAME);
+  }
+  else
+  {
+    Serial.println("Failed to connect to WiFi... Credentials: " + String(AP_SSID) + " " + String(AP_PASSWORD));
   }
 }
 
 void setupWebServer()
 {
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(200, "text/plain", "I'm online and running"); });
+  async_web_server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+                      { request->send(200, "text/plain", "I'm online and running. Version: " + String(VERSION)); });
 
-  server.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *request)
-            { 
+  async_web_server.on("/version", HTTP_GET, [](AsyncWebServerRequest *request)
+                      { request->send(200, "text/plain", String(VERSION)); });
+
+  async_web_server.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *request)
+                      {
               request->send(200, "text/plain", "rebooting");
-              delay(500);
-              ESP.restart(); });
+              AsyncWebServerRequest* req = request;
+              req->onDisconnect([]()
+              {
+                  turn_off_display();
+                  delay(500);
+                  ESP.restart();
+              }); });
 
-  server.begin();
+  async_web_server.begin();
   Serial.println("HTTP server started");
 }
 
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("");
-  Serial.println("\n Starting");
-  setupWiFi();
+  Serial.println("Start of Arc Reactor...");
+
+  turn_off_display();
   pinMode(BLUE_LED_1_PIN, OUTPUT);
   pinMode(BLUE_LED_2_PIN, OUTPUT);
-  ElegantOTA.begin(&server);
-
+  ElegantOTA.begin(&async_web_server);
   setupWebServer();
-
   ntp_client.begin();
   led_ring.begin();
-  flash_cuckoo();
-  blue_light(true);
-  digits_display.setBrightness(DISPLAY_BACKLIGHT_LEVEL);
-  showDigitsOnDisplay(88, 88, show_colon);
+  show_white_flash();
+  show_blue_light(true);
+  setupWiFi();
+
+  if (wifi_is_connected)
+  {
+    ntp_client_updated_on_startup = ntp_client.update();
+  }
+  else
+  {
+    Serial.println("WiFi not connected, turning off display...");
+    turn_off_display();
+  }
+  Serial.println("end of setup...");
 }
 
 void loop()
 {
-  wifi_is_connected = WiFi.status() == WL_CONNECTED;
-  if (secondChanged())
-  {
-    show_colon = !show_colon;
-  }
-
+  checkWifiConnectionAndReconnectIfLost();
+  handle_night();
   showTime();
-  blue_light(false);
-  digitalWrite(BLUE_LED_1_PIN, 1);
-  digitalWrite(BLUE_LED_2_PIN, 1);
+  ElegantOTA.loop();
+  delay(1);
+}
+
+void handle_night()
+{
+  int currentHour = ntp_client.getHours();
+  night_mode_is_enabled = !(currentHour > NIGHT_MODE_HOUR_START && currentHour < NIGHT_MODE_HOUR_END);
+  if (night_mode_is_enabled)
+  {
+    led_ring.setBrightness(LED_RING_NIGHT_BRIGHTNESS);
+    led_ring.show();
+    turn_off_display();
+  }
+  else
+  {
+    led_ring.setBrightness(LED_RING_BRIGHTNESS);
+    led_ring.show();
+    turn_on_display();
+    showTime();
+  }
+}
+
+void checkWifiConnectionAndReconnectIfLost()
+{
+  wifi_is_connected = WiFi.status() == WL_CONNECTED;
 
   if (!wifi_is_connected)
   {
@@ -111,18 +160,16 @@ void loop()
     WiFi.mode(WIFI_STA);
     WiFi.begin(AP_SSID, AP_PASSWORD);
     WiFi.hostname(HOSTNAME);
+    delay(3000);
     wifi_is_connected = WiFi.status() == WL_CONNECTED;
     if (wifi_is_connected)
     {
       Serial.println("WiFi connection repaired...");
     }
   }
-
-  ElegantOTA.loop();
-  delay(1);
 }
 
-void blue_light(bool showSmoothly)
+void show_blue_light(bool showSmoothly)
 {
   led_ring.setBrightness(LED_RING_BRIGHTNESS);
   for (int i = 0; i < PIXELS_COUNT_ON_RGB_LED; i++)
@@ -140,16 +187,16 @@ void blue_light(bool showSmoothly)
   }
 }
 
-void flash_cuckoo()
+void show_white_flash()
 {
-  led_ring.setBrightness(LED_RING_BRIGHTNESS_FLASH);
+  led_ring.setBrightness(LED_RING_BRIGHTNESS);
   for (int i = 0; i < PIXELS_COUNT_ON_RGB_LED; i++)
   {
     led_ring.setPixelColor(i, led_ring.Color(250, 250, 250));
   }
   led_ring.show();
 
-  for (int i = LED_RING_BRIGHTNESS_FLASH; i > 10; i--)
+  for (int i = LED_RING_BRIGHTNESS; i > 10; i--)
   {
     led_ring.setBrightness(i);
     led_ring.show();
@@ -184,9 +231,55 @@ bool secondChanged()
 
 void showTime()
 {
+  if (night_mode_is_enabled)
+  {
+    return;
+  }
+
+  bool ntp_client_updated = false;
   if (wifi_is_connected)
   {
-    ntp_client.update();
+    ntp_client_updated = ntp_client.update();
   }
-  showDigitsOnDisplay(ntp_client.getHours(), ntp_client.getMinutes(), show_colon);
+  if (!ntp_client_updated && !ntp_client_updated_on_startup)
+  {
+    turn_off_display();
+  }
+  else
+  {
+    if (secondChanged())
+    {
+      show_colon = !show_colon;
+    }
+    showDigitsOnDisplay(ntp_client.getHours(), ntp_client.getMinutes(), show_colon);
+  }
+}
+
+void showLoadingOnDigitsDisplay()
+{
+  turn_on_display();
+  uint8_t frames[][4] = {
+      {0x01 | 0x02, 0x01 | 0x02, 0x01 | 0x02, 0x01 | 0x02}, // Upper horizontal and right upper
+      {0x02 | 0x04, 0x02 | 0x04, 0x02 | 0x04, 0x02 | 0x04}, // Right upper and right lower
+      {0x04 | 0x08, 0x04 | 0x08, 0x04 | 0x08, 0x04 | 0x08}, // Right lower and bottom horizontal
+      {0x08 | 0x10, 0x08 | 0x10, 0x08 | 0x10, 0x08 | 0x10}, // Bottom horizontal and left lower
+      {0x10 | 0x20, 0x10 | 0x20, 0x10 | 0x20, 0x10 | 0x20}, // Left lower and left upper
+      {0x20 | 0x01, 0x20 | 0x01, 0x20 | 0x01, 0x20 | 0x01}, // Left upper and upper horizontal
+  };
+
+  static int currentFrame = 0; // Current animation frame
+  digits_display.setSegments(frames[currentFrame]);
+  currentFrame = (currentFrame + 1) % 6; // Move to the next frame
+  delay(300);
+}
+
+void turn_off_display()
+{
+  digits_display.clear();
+  digits_display.setBrightness(0, false);
+}
+
+void turn_on_display()
+{
+  digits_display.setBrightness(DISPLAY_BACKLIGHT_LEVEL, true);
 }
