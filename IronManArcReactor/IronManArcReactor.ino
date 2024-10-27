@@ -16,22 +16,22 @@
 
 //========================CONFIGURATIONS================================================================================================================================
 const char *VERSION = "1.1";
-const char *AP_SSID = "IRON_MAN_ARC";                       // WiFi network to connect to
-const char *AP_PASSWORD = "";                               // WiFi password
+const char *AP_SSID = "IRON_MAN_ARC";                       // WiFi network to connect to (change to what you need)
+const char *AP_PASSWORD = "";                               // WiFi password (change to what you need)
 const char *HOSTNAME = "IRON_MAN_ARC";                      // Device hostname
-const char *NTP_POOL_ADDRESS = "ua.pool.ntp.org";           // NTP server address
-const unsigned long GMT_3_OFFSET_IN_SECONDS = 3600 * 3;     // GMT + 3 offset in seconds
+const char *NTP_POOL_ADDRESS = "ua.pool.ntp.org";           // NTP server address (change to what you need)
+const unsigned long GMT_TIMEZONE_PLUS_HOUR = 2;             // GMT + 2 timezone (Ukrainian Winter time)
 const unsigned long NTP_CLIENT_UPDATE_TIME_IN_MS = 3600000; // One hour
 const unsigned int WIFI_CONNECTION_TIMEOUT_IN_MS = 10000;   // 10 seconds to connect to wifi
 const unsigned int DISPLAY_BACKLIGHT_LEVEL = 2;             // Display brightness level (0-7)
 const unsigned int LED_RING_BRIGHTNESS = 150;               // LED ring brightness (0-255)
 const unsigned int LED_RING_NIGHT_BRIGHTNESS = 5;           // LED ring brightness at night (0-255)
 const unsigned int PIXELS_COUNT_ON_RGB_LED = 35;            // Number of NeoPixels
+const unsigned int NIGHT_MODE_HOUR_END = 7;                 // Time in hours to enable clock display and increase ring brightness
+const unsigned int NIGHT_MODE_HOUR_START = 23;              // Time in hours to shutdown clock display and decrease ring brightness
 const unsigned int RED_LED_COLOR_RGB_NUMBER = 0;
 const unsigned int GREEN_LED_COLOR_RGB_NUMBER = 0;
 const unsigned int BLUE_LED_COLOR_RGB_NUMBER = 255;
-const unsigned int NIGHT_MODE_HOUR_START = 7;
-const unsigned int NIGHT_MODE_HOUR_END = 23;
 //======================================================================================================================================================================
 
 bool wifi_is_connected = false;
@@ -43,7 +43,7 @@ unsigned long colon_previous_millis = 0;
 Adafruit_NeoPixel led_ring(PIXELS_COUNT_ON_RGB_LED, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 TM1637Display digits_display(DISPLAY_CLK, DISPLAY_DIO);
 WiFiUDP wifi_udp_client;
-NTPClient ntp_client(wifi_udp_client, NTP_POOL_ADDRESS, GMT_3_OFFSET_IN_SECONDS, NTP_CLIENT_UPDATE_TIME_IN_MS);
+NTPClient ntp_client(wifi_udp_client, NTP_POOL_ADDRESS, 3600 * GMT_TIMEZONE_PLUS_HOUR, NTP_CLIENT_UPDATE_TIME_IN_MS);
 AsyncWebServer async_web_server(80);
 
 void setupWiFi()
@@ -119,25 +119,25 @@ void setup()
     Serial.println("WiFi not connected, turning off display...");
     turn_off_display();
   }
-  Serial.println("end of setup...");
+  Serial.println("end of Arc Reactor setup...");
 }
 
 void loop()
 {
   checkWifiConnectionAndReconnectIfLost();
-  handle_night();
+  handleNightMode();
   showTime();
   ElegantOTA.loop();
   delay(1);
 }
 
-void handle_night()
+void handleNightMode()
 {
   int currentHour = ntp_client.getHours();
-  night_mode_is_enabled = !(currentHour > NIGHT_MODE_HOUR_START && currentHour < NIGHT_MODE_HOUR_END);
+  night_mode_is_enabled = !(currentHour > NIGHT_MODE_HOUR_END && currentHour < NIGHT_MODE_HOUR_START);
   if (night_mode_is_enabled)
   {
-    led_ring.setBrightness(LED_RING_NIGHT_BRIGHTNESS);
+    led_ring.setBrightness(5);
     led_ring.show();
     turn_off_display();
   }
