@@ -6,16 +6,19 @@
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ElegantOTA.h>
+#include <EEPROM.h>
 
 #define BLUE_LED_1_PIN D1
 #define BLUE_LED_2_PIN D2
 #define DISPLAY_DIO D5
 #define DISPLAY_CLK D6
 #define RGB_LED_PIN D7
+#define EEPROM_WINTER_TIME_ADDR 0
+#define EEPROM_SIZE 1
 //======================================================================================================================================================================
 
 //========================CONFIGURATIONS================================================================================================================================
-const char *VERSION = "1.2";
+const char *VERSION = "1.3";
 const char *AP_SSID = "IRON_MAN_ARC";                       // WiFi network to connect to (change to what you need)
 const char *AP_PASSWORD = "";                               // WiFi password (change to what you need)
 const char *AP_HOSTNAME = "IRON_MAN_ARC";                   // Device hostname
@@ -43,12 +46,117 @@ bool show_colon = true;
 bool ntp_client_updated_on_startup = false;
 bool night_mode_is_enabled = false;
 bool disable_clock_in_night_mode = false;
+bool is_summer_time = false;
 
 Adafruit_NeoPixel led_ring(PIXELS_COUNT_ON_RGB_LED, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 TM1637Display time_display(DISPLAY_CLK, DISPLAY_DIO);
 WiFiUDP wifi_udp_client;
-NTPClient ntp_client(wifi_udp_client, NTP_POOL_ADDRESS, 3600 * GMT_TIMEZONE_PLUS_HOUR, NTP_CLIENT_UPDATE_TIME_IN_MS);
+NTPClient *ntp_client;
 AsyncWebServer async_web_server(80);
+
+const char *indexPageHtml = R"rawliteral(
+  <html>
+  <head>
+      <title>Iron Man's Arc Reactor</title>
+      <style>
+          body {
+              font-family: Arial, sans-serif;
+              margin: 0;
+              padding: 0;
+              display: flex;
+              flex-direction: column;
+              justify-content: center;
+              align-items: center;
+              text-align: center;
+              background-color: #000;
+              color: #0ff;
+              min-height: 100vh;
+          }
+          h1 {
+              font-size: 2rem;
+              margin-bottom: 1rem;
+          }
+          a {
+              font-size: 1rem;
+              color: #0ff;
+              text-decoration: none;
+              padding: 0.5rem 1rem;
+              border: 2px solid #0ff;
+              border-radius: 5px;
+              transition: background-color 0.3s, color 0.3s;
+          }
+          a:hover {
+              background-color: #0ff;
+              color: #000;
+          }
+          .toggle-container {
+              margin-top: 20px;
+          }
+          .toggle {
+              position: relative;
+              display: inline-block;
+              width: 60px;
+              height: 34px;
+          }
+          .toggle input {
+              opacity: 0;
+              width: 0;
+              height: 0;
+          }
+          .slider {
+              position: absolute;
+              cursor: pointer;
+              top: 0;
+              left: 0;
+              right: 0;
+              bottom: 0;
+              background-color: #ccc;
+              transition: .4s;
+              border-radius: 34px;
+          }
+          .slider:before {
+              position: absolute;
+              content: "";
+              height: 26px;
+              width: 26px;
+              left: 4px;
+              bottom: 4px;
+              background-color: white;
+              transition: .4s;
+              border-radius: 50%;
+          }
+          input:checked + .slider {
+              background-color: #0ff;
+          }
+          input:checked + .slider:before {
+              transform: translateX(26px);
+          }
+      </style>
+  </head>
+  <body>
+      <h1>Iron Man's Arc Reactor</h1>
+      <a href="/update">OTA Update</a>
+      <div class="toggle-container">
+        <label>Winter Time</label>
+        <label class="toggle">
+            <input type="checkbox" id="timeToggle" onclick="confirmToggle()" %%TOGGLE_STATE%%>
+            <span class="slider"></span>
+        </label>
+        <label>Summer Time</label>
+    </div>
+      <script>
+        function confirmToggle() {
+            if (confirm("Are you sure you want to change the time setting? The device will restart.")) {
+                fetch("/toggle-time", { method: "POST" })
+                    .then(response => location.reload());
+            } else {
+                document.getElementById("timeToggle").checked = !document.getElementById("timeToggle").checked;
+            }
+        }
+    </script>
+  </body>
+  </html>
+  )rawliteral";
 
 void setup()
 {
@@ -56,11 +164,11 @@ void setup()
   Serial.println("Start of Arc Reactor...");
 
   turn_off_display();
+  EEPROM.begin(EEPROM_SIZE);
   pinMode(BLUE_LED_1_PIN, OUTPUT);
   pinMode(BLUE_LED_2_PIN, OUTPUT);
   setupElegantOTA();
   setupWebServer();
-  ntp_client.begin();
   led_ring.begin();
   show_white_flash();
   show_blue_light(true);
@@ -68,7 +176,7 @@ void setup()
 
   if (wifi_is_connected)
   {
-    ntp_client_updated_on_startup = ntp_client.update();
+    setup_ntp_client();
   }
   else
   {
@@ -81,13 +189,23 @@ void setup()
 void loop()
 {
   checkWifiConnectionAndReconnectIfLost();
-  int currentHour = ntp_client.getHours();
+  int currentHour = ntp_client->getHours();
   night_mode_is_enabled = !(currentHour > NIGHT_MODE_HOUR_END && currentHour < NIGHT_MODE_HOUR_START);
 
   setLedRingBrightness();
   showTime();
   ElegantOTA.loop();
   delay(1);
+}
+
+void setup_ntp_client()
+{
+  is_summer_time = EEPROM.read(EEPROM_WINTER_TIME_ADDR) == 1;
+
+  unsigned long gmt_offset = 3600 * (GMT_TIMEZONE_PLUS_HOUR + (is_summer_time ? 1 : 0));
+  ntp_client = new NTPClient(wifi_udp_client, NTP_POOL_ADDRESS, gmt_offset, NTP_CLIENT_UPDATE_TIME_IN_MS);
+  ntp_client->begin();
+  ntp_client_updated_on_startup = ntp_client->update();
 }
 
 void setupWiFi()
@@ -128,6 +246,15 @@ void setupWebServer()
 
   async_web_server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request)
                       { handle_config_query(request); });
+
+  async_web_server.on("/toggle-time", HTTP_POST, [](AsyncWebServerRequest *request)
+                      {
+                        is_summer_time = !is_summer_time;
+                        EEPROM.write(EEPROM_WINTER_TIME_ADDR, is_summer_time);
+                        EEPROM.commit();
+                        EEPROM.end();
+                        request->send(200, "text/plain", "OK");
+                        ESP.restart(); });
 
   async_web_server.begin();
   Serial.println("HTTP server started");
@@ -259,7 +386,7 @@ void showTime()
   bool ntp_client_updated = false;
   if (wifi_is_connected)
   {
-    ntp_client_updated = ntp_client.update();
+    ntp_client_updated = ntp_client->update();
   }
   if (!ntp_client_updated && !ntp_client_updated_on_startup)
   {
@@ -271,7 +398,7 @@ void showTime()
     {
       show_colon = !show_colon;
     }
-    showDigitsOnDisplay(ntp_client.getHours(), ntp_client.getMinutes(), show_colon);
+    showDigitsOnDisplay(ntp_client->getHours(), ntp_client->getMinutes(), show_colon);
   }
 }
 

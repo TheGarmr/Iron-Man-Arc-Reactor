@@ -1,11 +1,7 @@
 void handle_web_root_query(AsyncWebServerRequest *request)
 {
-    String html = "<html><head><title>Iron Man's Arc Reactor</title><style>";
-    html += "body { font-family: Arial, sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; background-color: #000; color: #0ff; min-height: 100vh; }";
-    html += "h1 { font-size: 2rem; margin-bottom: 1rem; }";
-    html += "a { font-size: 1rem; color: #0ff; text-decoration: none; padding: 0.5rem 1rem; padding: 0.5rem 1rem; border: 2px solid #0ff; border-radius: 5px; transition: background-color 0.3s, color 0.3s; }";
-    html += "a:hover { background-color: #0ff; color: #000; } </style> </head>";
-    html += "<body> <h1>Iron Man's Arc Reactor</h1> <a href=\"/update\">OTA Update</a> </body> </html>";
+    String html = indexPageHtml;
+    html.replace("%%TOGGLE_STATE%%", is_summer_time ? "checked" : "");
 
     request->send(200, "text/html", html);
 }
